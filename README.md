@@ -1,0 +1,20 @@
+# Codex Telegram Control Bot
+
+Telegram-пульт для приема задач и уведомлений.
+
+## Переменные окружения
+
+- `TELEGRAM_BOT_TOKEN` - токен от BotFather.
+- `ADMIN_CHAT_ID` - Telegram chat id владельца.
+- `WEBHOOK_SECRET` - секрет webhook, можно любой длинной строкой.
+- `OPENAI_API_KEY` - опционально, для черновых AI-ответов прямо в Telegram.
+- `OPENAI_MODEL` - опционально, по умолчанию `gpt-5.4-mini`.
+
+## Команды
+
+- `/start`
+- `/help`
+- `/task текст задачи`
+- `/tasks`
+- `/status`
+- `/ping`
