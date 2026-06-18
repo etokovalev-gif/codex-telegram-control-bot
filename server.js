@@ -17,6 +17,7 @@ const githubOwner = process.env.GITHUB_OWNER || "";
 const githubRepo = process.env.GITHUB_REPO || "";
 const transcriptionModel = process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe";
 const businessContext = process.env.BUSINESS_CONTEXT || "";
+const statusLabels = ["status:new", "status:in-progress", "status:done", "status:blocked"];
 
 if (!token) {
   throw new Error("TELEGRAM_BOT_TOKEN is required");
@@ -100,16 +101,21 @@ function isAdmin(message) {
 
 function helpText() {
   return [
-    "Я пульт управления Codex.",
+    "🤖 Я пульт управления Codex.",
     "",
-    "Команды:",
+    "📌 Команды:",
     "/task текст задачи - поставить задачу",
     "/ask вопрос - спросить AI без создания GitHub Issue",
-    "Голосовое сообщение - расшифровать и поставить задачу",
-    "/tasks - показать последние задачи",
+    "/tasks - показать открытую очередь задач",
+    "/work номер - взять задачу в работу",
+    "/done номер - отметить задачу готовой",
+    "/block номер причина - заблокировать задачу",
+    "/todo номер - вернуть задачу в новые",
     "/status - проверить, что бот жив",
     "/ping - быстрый тест связи",
     "/help - список команд",
+    "",
+    "🎙 Голосовое сообщение тоже работает: я расшифрую его и поставлю задачу.",
     "",
     "Можно просто написать задачу обычным сообщением, я сохраню ее как /task."
   ].join("\n");
@@ -117,6 +123,32 @@ function helpText() {
 
 function githubEnabled() {
   return Boolean(githubToken && githubOwner && githubRepo);
+}
+
+async function githubRequest(path, options = {}) {
+  if (!githubEnabled()) {
+    throw new Error("GitHub Issues are not configured");
+  }
+
+  const response = await fetch(`https://api.github.com/repos/${githubOwner}/${githubRepo}${path}`, {
+    ...options,
+    headers: {
+      "accept": "application/vnd.github+json",
+      "authorization": `Bearer ${githubToken}`,
+      "content-type": "application/json",
+      "x-github-api-version": "2022-11-28",
+      "user-agent": "codex-telegram-control-bot",
+      ...(options.headers || {})
+    }
+  });
+
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!response.ok) {
+    throw new Error(`GitHub request failed: ${response.status} ${JSON.stringify(data)}`);
+  }
+
+  return data;
 }
 
 async function createGitHubIssue(task, message) {
@@ -142,28 +174,76 @@ async function createGitHubIssue(task, message) {
     "Разобрать задачу, при необходимости уточнить детали у владельца, выполнить работу и отчитаться результатом."
   ].join("\n");
 
-  const response = await fetch(`https://api.github.com/repos/${githubOwner}/${githubRepo}/issues`, {
+  const data = await githubRequest("/issues", {
     method: "POST",
-    headers: {
-      "accept": "application/vnd.github+json",
-      "authorization": `Bearer ${githubToken}`,
-      "content-type": "application/json",
-      "x-github-api-version": "2022-11-28",
-      "user-agent": "codex-telegram-control-bot"
-    },
     body: JSON.stringify({
       title: `[Telegram] ${task.text.slice(0, 80)}`,
       body,
-      labels: ["telegram-task"]
+      labels: ["telegram-task", "status:new"]
     })
   });
 
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(`GitHub issue creation failed: ${response.status} ${JSON.stringify(data)}`);
+  return { number: data.number, url: data.html_url };
+}
+
+function statusLabel(issue) {
+  const label = (issue.labels || []).find((item) => statusLabels.includes(item.name));
+  return label?.name || "status:new";
+}
+
+function statusTitle(label) {
+  return {
+    "status:new": "🆕 новая",
+    "status:in-progress": "🔧 в работе",
+    "status:done": "✅ готово",
+    "status:blocked": "⛔ заблокирована"
+  }[label] || "🆕 новая";
+}
+
+async function listGitHubTasks(limit = 10) {
+  const params = new URLSearchParams({
+    state: "open",
+    labels: "telegram-task",
+    per_page: String(limit),
+    sort: "created",
+    direction: "desc"
+  });
+
+  return githubRequest(`/issues?${params.toString()}`, { method: "GET" });
+}
+
+async function setIssueStatus(issueNumber, nextStatus, note = "") {
+  const issue = await githubRequest(`/issues/${issueNumber}`, { method: "GET" });
+  const nextLabel = `status:${nextStatus}`;
+  const labels = new Set((issue.labels || []).map((label) => label.name));
+
+  for (const label of statusLabels) {
+    labels.delete(label);
+  }
+  labels.add("telegram-task");
+  labels.add(nextLabel);
+
+  const body = { labels: [...labels] };
+  if (nextStatus === "done") {
+    body.state = "closed";
+    body.state_reason = "completed";
+  } else if (issue.state === "closed") {
+    body.state = "open";
   }
 
-  return data.html_url;
+  const updated = await githubRequest(`/issues/${issueNumber}`, {
+    method: "PATCH",
+    body: JSON.stringify(body)
+  });
+
+  if (note) {
+    await githubRequest(`/issues/${issueNumber}/comments`, {
+      method: "POST",
+      body: JSON.stringify({ body: `Telegram status note:\n\n${note}` })
+    });
+  }
+
+  return updated;
 }
 
 async function answerWithOpenAI(prompt) {
@@ -285,10 +365,13 @@ async function transcribeTelegramVoice(fileId) {
 async function createTask(message, text) {
   const taskText = text.trim();
   if (!taskText) {
-    await telegram("sendMessage", {
-      chat_id: message.chat.id,
-      text: "Напиши задачу после /task. Например: /task Сделай лендинг для акции 8 марта"
-    });
+    await sendFormattedText(message.chat.id, [
+      "<b>⚠️ Не вижу текст задачи</b>",
+      "",
+      "Напиши после команды, что нужно сделать.",
+      "",
+      "<i>Пример: /task Сделай лендинг для акции 8 марта</i>"
+    ].join("\n"));
     return;
   }
 
@@ -301,23 +384,25 @@ async function createTask(message, text) {
   tasks.unshift(task);
   tasks.splice(20);
 
-  let issueUrl = null;
+  let issue = null;
   try {
-    issueUrl = await createGitHubIssue(task, message);
+    issue = await createGitHubIssue(task, message);
   } catch (error) {
     console.error(error);
   }
 
-  await telegram("sendMessage", {
-    chat_id: message.chat.id,
-    text: [
-      `Задача принята: #${task.id}`,
-      "",
-      task.text,
-      "",
-      issueUrl ? `GitHub Issue: ${issueUrl}` : "GitHub Issue: не создан"
-    ].join("\n")
-  });
+  await sendFormattedText(message.chat.id, [
+    "<b>✅ Задача принята</b>",
+    "",
+    issue ? `<b>GitHub:</b> #${issue.number}` : `<b>ID:</b> #${task.id}`,
+    `<b>Статус:</b> ${statusTitle("status:new")}`,
+    "",
+    task.text,
+    "",
+    issue
+      ? `<i>Команды: /work ${issue.number}, /done ${issue.number}, /block ${issue.number} причина</i>`
+      : "<i>GitHub Issue не создан.</i>"
+  ].join("\n"));
 
   if (openaiApiKey) {
     const aiText = await answerWithOpenAI(task.text);
@@ -347,6 +432,59 @@ async function askAssistant(message, text) {
 
   const aiText = await answerWithOpenAI(prompt);
   await sendFormattedText(message.chat.id, aiText || "Не получил текст ответа от OpenAI.");
+}
+
+async function sendTasksList(message) {
+  if (!githubEnabled()) {
+    await sendFormattedText(message.chat.id, "<b>⚠️ GitHub Issues не подключены</b>\n\nНе могу показать очередь задач.");
+    return;
+  }
+
+  const issues = await listGitHubTasks(10);
+  if (!issues.length) {
+    await sendFormattedText(message.chat.id, "<b>✅ Открытых задач нет</b>\n\nОчередь сейчас пустая.");
+    return;
+  }
+
+  const lines = ["<b>📋 Очередь задач</b>", ""];
+  for (const issue of issues) {
+    lines.push(`<b>#${issue.number}</b> ${statusTitle(statusLabel(issue))}`);
+    lines.push(issue.title.replace(/</g, "&lt;").replace(/>/g, "&gt;"));
+    lines.push("");
+  }
+  lines.push("<i>Команды: /work номер, /done номер, /block номер причина, /todo номер</i>");
+  await sendFormattedText(message.chat.id, lines.join("\n"));
+}
+
+async function handleStatusCommand(message, text, nextStatus) {
+  const match = text.match(/^\/\w+(?:@\w+)?\s+(\d+)(?:\s+([\s\S]+))?$/);
+  if (!match) {
+    await sendFormattedText(message.chat.id, [
+      "<b>⚠️ Нужен номер задачи</b>",
+      "",
+      "<i>Пример: /work 12</i>",
+      "<i>Пример: /block 12 жду материалы от клиента</i>"
+    ].join("\n"));
+    return;
+  }
+
+  if (!githubEnabled()) {
+    await sendFormattedText(message.chat.id, "<b>⚠️ GitHub Issues не подключены</b>\n\nНе могу менять статусы.");
+    return;
+  }
+
+  const issueNumber = Number(match[1]);
+  const note = (match[2] || "").trim();
+  const issue = await setIssueStatus(issueNumber, nextStatus, note);
+
+  await sendFormattedText(message.chat.id, [
+    "<b>✅ Статус обновлен</b>",
+    "",
+    `<b>Задача:</b> #${issue.number}`,
+    `<b>Статус:</b> ${statusTitle(`status:${nextStatus}`)}`,
+    "",
+    issue.title.replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  ].join("\n"));
 }
 
 function parseVoiceIntent(text) {
@@ -442,13 +580,27 @@ async function handleMessage(message) {
   }
 
   if (text === "/tasks") {
-    const recent = tasks.slice(0, 10);
-    await telegram("sendMessage", {
-      chat_id: message.chat.id,
-      text: recent.length
-        ? recent.map((task) => `#${task.id} ${task.text}`).join("\n\n")
-        : "Пока задач нет."
-    });
+    await sendTasksList(message);
+    return;
+  }
+
+  if (text.startsWith("/work")) {
+    await handleStatusCommand(message, text, "in-progress");
+    return;
+  }
+
+  if (text.startsWith("/done")) {
+    await handleStatusCommand(message, text, "done");
+    return;
+  }
+
+  if (text.startsWith("/block")) {
+    await handleStatusCommand(message, text, "blocked");
+    return;
+  }
+
+  if (text.startsWith("/todo")) {
+    await handleStatusCommand(message, text, "new");
     return;
   }
 
@@ -492,9 +644,14 @@ const server = http.createServer(async (req, res) => {
         raw += chunk;
       });
       req.on("end", async () => {
-        const update = JSON.parse(raw || "{}");
-        await handleUpdate(update);
-        json(res, 200, { ok: true });
+        try {
+          const update = JSON.parse(raw || "{}");
+          await handleUpdate(update);
+          json(res, 200, { ok: true });
+        } catch (error) {
+          console.error(error);
+          json(res, 200, { ok: true, handled: false });
+        }
       });
       return;
     }
