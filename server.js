@@ -3,6 +3,12 @@ import { randomUUID } from "node:crypto";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const adminChatId = process.env.ADMIN_CHAT_ID;
+const adminChatIds = new Set(
+  (process.env.ADMIN_CHAT_IDS || adminChatId || "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean)
+);
 const port = Number(process.env.PORT || 3000);
 const webhookSecret = process.env.WEBHOOK_SECRET || "";
 const openaiApiKey = process.env.OPENAI_API_KEY || "";
@@ -16,7 +22,7 @@ if (!token) {
 }
 
 if (!adminChatId) {
-  throw new Error("ADMIN_CHAT_ID is required");
+  throw new Error("ADMIN_CHAT_ID or ADMIN_CHAT_IDS is required");
 }
 
 const tasks = [];
@@ -45,7 +51,7 @@ async function telegram(method, body) {
 }
 
 function isAdmin(message) {
-  return String(message?.chat?.id || "") === String(adminChatId);
+  return adminChatIds.has(String(message?.chat?.id || ""));
 }
 
 function helpText() {
@@ -320,7 +326,13 @@ async function handleMessage(message) {
   if (!isAdmin(message)) {
     await telegram("sendMessage", {
       chat_id: message.chat.id,
-      text: "Доступ закрыт."
+      text: [
+        "Доступ закрыт.",
+        "",
+        `Твой chat_id: ${message.chat.id}`,
+        "",
+        "Отправь этот номер владельцу, чтобы он добавил тебя в админы."
+      ].join("\n")
     });
     return;
   }
