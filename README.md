@@ -9,6 +9,9 @@ Telegram-пульт для приема задач и уведомлений.
 - `WEBHOOK_SECRET` - секрет webhook, можно любой длинной строкой.
 - `OPENAI_API_KEY` - опционально, для черновых AI-ответов прямо в Telegram.
 - `OPENAI_MODEL` - опционально, по умолчанию `gpt-5.4-mini`.
+- `GITHUB_TOKEN` - токен GitHub с правом создавать issues.
+- `GITHUB_OWNER` - владелец репозитория очереди задач.
+- `GITHUB_REPO` - репозиторий очереди задач.
 
 ## Команды
 
@@ -18,3 +21,5 @@ Telegram-пульт для приема задач и уведомлений.
 - `/tasks`
 - `/status`
 - `/ping`
+
+Если подключены `GITHUB_TOKEN`, `GITHUB_OWNER` и `GITHUB_REPO`, каждая задача автоматически создает GitHub Issue.

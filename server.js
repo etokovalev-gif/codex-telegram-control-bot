@@ -6,6 +6,9 @@ const adminChatId = process.env.ADMIN_CHAT_ID;
 const port = Number(process.env.PORT || 3000);
 const webhookSecret = process.env.WEBHOOK_SECRET || "";
 const openaiApiKey = process.env.OPENAI_API_KEY || "";
+const githubToken = process.env.GITHUB_TOKEN || "";
+const githubOwner = process.env.GITHUB_OWNER || "";
+const githubRepo = process.env.GITHUB_REPO || "";
 
 if (!token) {
   throw new Error("TELEGRAM_BOT_TOKEN is required");
@@ -57,6 +60,57 @@ function helpText() {
     "",
     "Можно просто написать задачу обычным сообщением, я сохраню ее как /task."
   ].join("\n");
+}
+
+function githubEnabled() {
+  return Boolean(githubToken && githubOwner && githubRepo);
+}
+
+async function createGitHubIssue(task, message) {
+  if (!githubEnabled()) {
+    return null;
+  }
+
+  const body = [
+    "## Задача из Telegram",
+    "",
+    task.text,
+    "",
+    "## Метаданные",
+    "",
+    `- Task ID: ${task.id}`,
+    `- Created at: ${task.createdAt}`,
+    `- Telegram from: ${message.from?.first_name || "admin"}`,
+    `- Telegram user id: ${message.from?.id || "unknown"}`,
+    `- Telegram chat id: ${message.chat?.id || "unknown"}`,
+    "",
+    "## Ожидаемое действие",
+    "",
+    "Разобрать задачу, при необходимости уточнить детали у владельца, выполнить работу и отчитаться результатом."
+  ].join("\n");
+
+  const response = await fetch(`https://api.github.com/repos/${githubOwner}/${githubRepo}/issues`, {
+    method: "POST",
+    headers: {
+      "accept": "application/vnd.github+json",
+      "authorization": `Bearer ${githubToken}`,
+      "content-type": "application/json",
+      "x-github-api-version": "2022-11-28",
+      "user-agent": "codex-telegram-control-bot"
+    },
+    body: JSON.stringify({
+      title: `[Telegram] ${task.text.slice(0, 80)}`,
+      body,
+      labels: ["telegram-task"]
+    })
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(`GitHub issue creation failed: ${response.status} ${JSON.stringify(data)}`);
+  }
+
+  return data.html_url;
 }
 
 async function answerWithOpenAI(prompt) {
@@ -113,9 +167,22 @@ async function createTask(message, text) {
   tasks.unshift(task);
   tasks.splice(20);
 
+  let issueUrl = null;
+  try {
+    issueUrl = await createGitHubIssue(task, message);
+  } catch (error) {
+    console.error(error);
+  }
+
   await telegram("sendMessage", {
     chat_id: message.chat.id,
-    text: `Задача принята: #${task.id}\n\n${task.text}`
+    text: [
+      `Задача принята: #${task.id}`,
+      "",
+      task.text,
+      "",
+      issueUrl ? `GitHub Issue: ${issueUrl}` : "GitHub Issue: не создан"
+    ].join("\n")
   });
 
   if (openaiApiKey) {
@@ -156,7 +223,8 @@ async function handleMessage(message) {
       text: [
         "Бот работает.",
         `Задач в памяти: ${tasks.length}`,
-        `OpenAI: ${openaiApiKey ? "подключен" : "не подключен"}`
+        `OpenAI: ${openaiApiKey ? "подключен" : "не подключен"}`,
+        `GitHub Issues: ${githubEnabled() ? `${githubOwner}/${githubRepo}` : "не подключены"}`
       ].join("\n")
     });
     return;
