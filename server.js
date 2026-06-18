@@ -63,6 +63,37 @@ async function sendTelegramText(chatId, text) {
   }
 }
 
+function htmlToPlain(text) {
+  return text
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"");
+}
+
+async function sendFormattedText(chatId, text) {
+  const maxLength = 3600;
+  const cleanText = text || "Пустой ответ.";
+
+  for (let i = 0; i < cleanText.length; i += maxLength) {
+    const chunk = cleanText.slice(i, i + maxLength);
+    try {
+      await telegram("sendMessage", {
+        chat_id: chatId,
+        text: chunk,
+        parse_mode: "HTML",
+        disable_web_page_preview: true
+      });
+    } catch (error) {
+      console.error(error);
+      await sendTelegramText(chatId, htmlToPlain(chunk));
+    }
+  }
+}
+
 function isAdmin(message) {
   return adminChatIds.has(String(message?.chat?.id || ""));
 }
@@ -157,7 +188,13 @@ async function answerWithOpenAI(prompt) {
             "Если в контексте есть релевантные факты, используй их и называй ФАКТ.",
             "Если делаешь предположение, называй ГИПОТЕЗА и уровень уверенности.",
             "Давай максимум 5 пунктов. Сначала главный вывод одним предложением.",
-            "Не используй markdown-разметку вроде **жирный**, потому что Telegram может показать ее как обычные символы.",
+            "Оформляй ответ красиво для Telegram.",
+            "Используй только Telegram HTML: <b>заголовки</b>, <i>акценты и призывы</i>, <u>важные смыслы</u>, <code>короткие команды</code>.",
+            "Не используй Markdown: не пиши **жирный** и ###.",
+            "Используй тематические эмодзи в заголовках: 🎯, 📊, ⚠️, 💰, ✅, 🚫, 🔥.",
+            "Делай короткие абзацы, пустые строки между блоками, максимум 5 смысловых блоков.",
+            "Главное должно быть видно за первые 2 строки.",
+            "Не раскрывай внутренние цифры без необходимости. Если цифра нужна для ответа, используй только релевантные факты.",
             "Если данных не хватает, прямо скажи: недостаточно данных.",
             businessContext ? `\nКонтекст бизнеса:\n${businessContext}` : "\nКонтекст бизнеса не подключен."
           ].join("\n")
@@ -285,10 +322,7 @@ async function createTask(message, text) {
   if (openaiApiKey) {
     const aiText = await answerWithOpenAI(task.text);
     if (aiText) {
-      await telegram("sendMessage", {
-        chat_id: message.chat.id,
-        text: `Черновой ответ:\n\n${aiText}`
-      });
+      await sendFormattedText(message.chat.id, `<b>Черновой ответ:</b>\n\n${aiText}`);
     }
   }
 }
@@ -312,7 +346,7 @@ async function askAssistant(message, text) {
   }
 
   const aiText = await answerWithOpenAI(prompt);
-  await sendTelegramText(message.chat.id, aiText || "Не получил текст ответа от OpenAI.");
+  await sendFormattedText(message.chat.id, aiText || "Не получил текст ответа от OpenAI.");
 }
 
 function parseVoiceIntent(text) {
