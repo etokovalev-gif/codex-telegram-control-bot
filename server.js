@@ -404,12 +404,7 @@ async function createTask(message, text) {
       : "<i>GitHub Issue не создан.</i>"
   ].join("\n"));
 
-  if (openaiApiKey) {
-    const aiText = await answerWithOpenAI(task.text);
-    if (aiText) {
-      await sendFormattedText(message.chat.id, `<b>Черновой ответ:</b>\n\n${aiText}`);
-    }
-  }
+  // /task should only register work. Use /ask when the owner wants an immediate AI answer.
 }
 
 async function askAssistant(message, text) {
