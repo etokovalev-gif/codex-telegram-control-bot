@@ -9,6 +9,7 @@ const openaiApiKey = process.env.OPENAI_API_KEY || "";
 const githubToken = process.env.GITHUB_TOKEN || "";
 const githubOwner = process.env.GITHUB_OWNER || "";
 const githubRepo = process.env.GITHUB_REPO || "";
+const transcriptionModel = process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe";
 
 if (!token) {
   throw new Error("TELEGRAM_BOT_TOKEN is required");
@@ -54,6 +55,7 @@ function helpText() {
     "Команды:",
     "/task текст задачи - поставить задачу",
     "/ask вопрос - спросить AI без создания GitHub Issue",
+    "Голосовое сообщение - расшифровать и поставить задачу",
     "/tasks - показать последние задачи",
     "/status - проверить, что бот жив",
     "/ping - быстрый тест связи",
@@ -149,6 +151,52 @@ async function answerWithOpenAI(prompt) {
   return data.output_text || null;
 }
 
+async function downloadTelegramFile(fileId) {
+  const file = await telegram("getFile", { file_id: fileId });
+  const response = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
+
+  if (!response.ok) {
+    throw new Error(`Telegram file download failed: ${response.status}`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  return {
+    buffer: Buffer.from(arrayBuffer),
+    fileName: file.file_path.split("/").pop() || "voice.ogg"
+  };
+}
+
+async function transcribeTelegramVoice(fileId) {
+  if (!openaiApiKey) {
+    throw new Error("OPENAI_API_KEY is required for voice transcription");
+  }
+
+  const { buffer, fileName } = await downloadTelegramFile(fileId);
+  const form = new FormData();
+  form.append("model", transcriptionModel);
+  form.append("response_format", "json");
+  form.append(
+    "prompt",
+    "Русская речь владельца бизнеса ПодариТрек. Возможные слова: ПодариТрек, Telegram, Railway, GitHub, Codex, лендинг, бот, воронка, оффер, апсейл."
+  );
+  form.append("file", new Blob([buffer], { type: "audio/ogg" }), fileName);
+
+  const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: {
+      "authorization": `Bearer ${openaiApiKey}`
+    },
+    body: form
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(`OpenAI transcription failed: ${response.status} ${JSON.stringify(data)}`);
+  }
+
+  return data.text || "";
+}
+
 async function createTask(message, text) {
   const taskText = text.trim();
   if (!taskText) {
@@ -222,6 +270,52 @@ async function askAssistant(message, text) {
   });
 }
 
+function parseVoiceIntent(text) {
+  const normalized = text.trim();
+  const askMatch = normalized.match(/^(вопрос|спроси|ask)[:,.!?\s-]+(.+)/i);
+  const taskMatch = normalized.match(/^(задача|task)[:,.!?\s-]+(.+)/i);
+
+  if (askMatch) {
+    return { kind: "ask", text: askMatch[2] };
+  }
+
+  if (taskMatch) {
+    return { kind: "task", text: taskMatch[2] };
+  }
+
+  return { kind: "task", text: normalized };
+}
+
+async function handleVoice(message) {
+  if (!openaiApiKey) {
+    await telegram("sendMessage", {
+      chat_id: message.chat.id,
+      text: "Голосовые пока не работают: OpenAI API не подключен."
+    });
+    return;
+  }
+
+  await telegram("sendMessage", {
+    chat_id: message.chat.id,
+    text: "Слушаю голосовое и расшифровываю..."
+  });
+
+  const transcript = await transcribeTelegramVoice(message.voice.file_id);
+  const intent = parseVoiceIntent(transcript);
+
+  await telegram("sendMessage", {
+    chat_id: message.chat.id,
+    text: `Расшифровка:\n\n${transcript}`
+  });
+
+  if (intent.kind === "ask") {
+    await askAssistant(message, intent.text);
+    return;
+  }
+
+  await createTask(message, intent.text);
+}
+
 async function handleMessage(message) {
   if (!isAdmin(message)) {
     await telegram("sendMessage", {
@@ -232,6 +326,11 @@ async function handleMessage(message) {
   }
 
   const text = message.text || "";
+
+  if (message.voice) {
+    await handleVoice(message);
+    return;
+  }
 
   if (text === "/start" || text === "/help") {
     await telegram("sendMessage", { chat_id: message.chat.id, text: helpText() });
