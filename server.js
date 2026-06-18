@@ -154,7 +154,27 @@ async function answerWithOpenAI(prompt) {
   }
 
   const data = await response.json();
-  return data.output_text || null;
+  return extractResponseText(data);
+}
+
+function extractResponseText(data) {
+  if (typeof data.output_text === "string" && data.output_text.trim()) {
+    return data.output_text.trim();
+  }
+
+  const chunks = [];
+  for (const item of data.output || []) {
+    for (const content of item.content || []) {
+      if (typeof content.text === "string") {
+        chunks.push(content.text);
+      }
+      if (typeof content.output_text === "string") {
+        chunks.push(content.output_text);
+      }
+    }
+  }
+
+  return chunks.join("\n").trim() || null;
 }
 
 async function downloadTelegramFile(fileId) {
