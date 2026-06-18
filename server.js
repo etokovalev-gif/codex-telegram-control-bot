@@ -53,6 +53,7 @@ function helpText() {
     "",
     "Команды:",
     "/task текст задачи - поставить задачу",
+    "/ask вопрос - спросить AI без создания GitHub Issue",
     "/tasks - показать последние задачи",
     "/status - проверить, что бот жив",
     "/ping - быстрый тест связи",
@@ -196,6 +197,31 @@ async function createTask(message, text) {
   }
 }
 
+async function askAssistant(message, text) {
+  const prompt = text.trim();
+  if (!prompt) {
+    await telegram("sendMessage", {
+      chat_id: message.chat.id,
+      text: "Напиши вопрос после /ask. Например: /ask Какие слабые места у нашей воронки?"
+    });
+    return;
+  }
+
+  if (!openaiApiKey) {
+    await telegram("sendMessage", {
+      chat_id: message.chat.id,
+      text: "OpenAI API пока не подключен. Сохрани OPENAI_API_KEY в Railway Variables, и я начну отвечать."
+    });
+    return;
+  }
+
+  const aiText = await answerWithOpenAI(prompt);
+  await telegram("sendMessage", {
+    chat_id: message.chat.id,
+    text: aiText || "Не получил текст ответа от OpenAI."
+  });
+}
+
 async function handleMessage(message) {
   if (!isAdmin(message)) {
     await telegram("sendMessage", {
@@ -243,6 +269,11 @@ async function handleMessage(message) {
 
   if (text.startsWith("/task")) {
     await createTask(message, text.replace(/^\/task(@\w+)?/i, ""));
+    return;
+  }
+
+  if (text.startsWith("/ask")) {
+    await askAssistant(message, text.replace(/^\/ask(@\w+)?/i, ""));
     return;
   }
 
