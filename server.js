@@ -16,6 +16,7 @@ const githubToken = process.env.GITHUB_TOKEN || "";
 const githubOwner = process.env.GITHUB_OWNER || "";
 const githubRepo = process.env.GITHUB_REPO || "";
 const transcriptionModel = process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe";
+const businessContext = process.env.BUSINESS_CONTEXT || "";
 
 if (!token) {
   throw new Error("TELEGRAM_BOT_TOKEN is required");
@@ -48,6 +49,18 @@ async function telegram(method, body) {
     throw new Error(`Telegram ${method} failed: ${JSON.stringify(data)}`);
   }
   return data.result;
+}
+
+async function sendTelegramText(chatId, text) {
+  const maxLength = 3900;
+  const cleanText = text || "Пустой ответ.";
+
+  for (let i = 0; i < cleanText.length; i += maxLength) {
+    await telegram("sendMessage", {
+      chat_id: chatId,
+      text: cleanText.slice(i, i + maxLength)
+    });
+  }
 }
 
 function isAdmin(message) {
@@ -138,7 +151,16 @@ async function answerWithOpenAI(prompt) {
       input: [
         {
           role: "system",
-          content: "Ты краткий русскоязычный помощник владельца бизнеса ПодариТрек. Отвечай по делу."
+          content: [
+            "Ты русскоязычный бизнес-помощник владельца сервиса ПодариТрек.",
+            "Отвечай по конкретному бизнесу, а не типовыми списками.",
+            "Если в контексте есть релевантные факты, используй их и называй ФАКТ.",
+            "Если делаешь предположение, называй ГИПОТЕЗА и уровень уверенности.",
+            "Давай максимум 5 пунктов. Сначала главный вывод одним предложением.",
+            "Не используй markdown-разметку вроде **жирный**, потому что Telegram может показать ее как обычные символы.",
+            "Если данных не хватает, прямо скажи: недостаточно данных.",
+            businessContext ? `\nКонтекст бизнеса:\n${businessContext}` : "\nКонтекст бизнеса не подключен."
+          ].join("\n")
         },
         {
           role: "user",
@@ -290,10 +312,7 @@ async function askAssistant(message, text) {
   }
 
   const aiText = await answerWithOpenAI(prompt);
-  await telegram("sendMessage", {
-    chat_id: message.chat.id,
-    text: aiText || "Не получил текст ответа от OpenAI."
-  });
+  await sendTelegramText(message.chat.id, aiText || "Не получил текст ответа от OpenAI.");
 }
 
 function parseVoiceIntent(text) {
@@ -381,7 +400,8 @@ async function handleMessage(message) {
         "Бот работает.",
         `Задач в памяти: ${tasks.length}`,
         `OpenAI: ${openaiApiKey ? "подключен" : "не подключен"}`,
-        `GitHub Issues: ${githubEnabled() ? `${githubOwner}/${githubRepo}` : "не подключены"}`
+        `GitHub Issues: ${githubEnabled() ? `${githubOwner}/${githubRepo}` : "не подключены"}`,
+        `Business context: ${businessContext ? "подключен" : "не подключен"}`
       ].join("\n")
     });
     return;
